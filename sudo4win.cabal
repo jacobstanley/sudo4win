@@ -1,0 +1,22 @@
+name:          sudo4win
+version:       0.1.0.0
+license:       BSD3
+license-file:  LICENSE
+author:        Jacob Stanley
+maintainer:    jacob@stanley.io
+copyright:     Jacob Stanley
+category:      System
+build-type:    Simple
+cabal-version: >=1.6
+
+
+Executable sudo4win
+  main-is: Main.hs
+  hs-source-dirs: src
+  c-sources: cbits/service.c
+
+  build-depends:
+      base  == 4.5.*
+    , Win32 == 2.2.*
+
+  ghc-options: -Wall -threaded

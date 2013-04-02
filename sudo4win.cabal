@@ -13,10 +13,11 @@ cabal-version: >=1.6
 Executable sudo4win
   main-is: Main.hs
   hs-source-dirs: src
-  c-sources: cbits/service.c
 
   build-depends:
-      base  == 4.5.*
-    , Win32 == 2.2.*
+      base           == 4.*
+    , Win32          == 2.3.*
+    , Win32-services == 0.2.*
 
   ghc-options: -Wall -threaded
+  ld-options: -enable-stdcall-fixup

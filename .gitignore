@@ -1,0 +1,8 @@
+/dist/
+/cabal-dev/
+/log/
+*.aux
+*.hp
+*.prof
+*.ps
+*.swp

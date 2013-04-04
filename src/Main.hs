@@ -1,21 +1,69 @@
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 {-# OPTIONS_GHC -fno-warn-unused-do-bind #-}
 
 module Main (main) where
 
 import Control.Applicative ((<$>))
-import Control.Exception (throw)
 import Control.Concurrent
+import Control.Exception (throw)
 import Control.Monad (forever)
-import System.Environment (getArgs)
+import Data.Binary
+import Data.Typeable (Typeable)
+import GHC.Generics (Generic)
+import System.Directory (getCurrentDirectory)
+import System.Environment (getArgs, getExecutablePath, getEnvironment)
+import System.Exit
+import System.Process hiding (runProcess)
 import System.Win32.SystemServices.Services
 import System.Win32.Types
 
 import Control.Distributed.Process
 import Control.Distributed.Process.Node
+import Control.Distributed.Process.Closure
+import Network (withSocketsDo)
 import Network.Transport.TCP
 
-import Network (withSocketsDo)
+------------------------------------------------------------------------
+-- Remotable
+
+data Command = Command {
+      cmdArgs :: [String]
+    , cmdDir  :: FilePath
+    , cmdEnv  :: [(String, String)]
+    } deriving (Show, Generic, Typeable)
+
+command :: Command -> Process ExitCode
+command Command{..} = liftIO $ do
+    let cmd = unwords cmdArgs
+    putStrLn $ cmdDir ++ " $ " ++ cmd
+    (Nothing, Nothing, Nothing, pid) <- createProcess (shell cmd) {
+          cwd     = Just cmdDir
+        , env     = Just cmdEnv
+        }
+    waitForProcess pid
+
+deriving instance Generic ExitCode
+
+instance Binary Command
+instance Binary ExitCode
+
+$(remotable ['command])
+
+command' :: Command -> Closure (Process ExitCode)
+command' = $(mkClosure 'command)
+
+remoteTable :: RemoteTable
+remoteTable = __remoteTable initRemoteTable
+
+------------------------------------------------------------------------
+-- Main
 
 main :: IO ()
 main = withSocketsDo $ do
@@ -23,37 +71,50 @@ main = withSocketsDo $ do
     case args of
       ["--service"] -> runService
       ["--server"]  -> runServer
-      xs            -> runClient xs
+      _             -> runClient args
 
 ------------------------------------------------------------------------
 -- Client
 
 runClient :: [String] -> IO ()
-runClient _ = do
+runClient args = do
     transport <- either throw id <$>
-                 createTransport "localhost" "30020" defaultTCPParameters
-    node <- newLocalNode transport initRemoteTable
-    runProcess node $ do
-        return ()
+                 createTransport "127.0.0.1" "30021" defaultTCPParameters
+    local  <- newLocalNode transport remoteTable
+    server <- readServerNode
+    env    <- getEnvironment
+    dir    <- getCurrentDirectory
+    runProcess local $ do
+        pid <- getSelfPid
+        let cmd = Command args dir env
+        code <- call $(functionTDict 'command) server (command' cmd)
+        liftIO (print code)
 
 ------------------------------------------------------------------------
 -- Server
 
 runServer :: IO ()
 runServer = do
-    forkServer
+    startServerNode
     putStrLn "Running sudo server..."
     forever $ threadDelay 1000000
 
-forkServer :: IO ProcessId
-forkServer = do
+startServerNode :: IO ()
+startServerNode = do
     transport <- either throw id <$>
-                 createTransport "localhost" "30020" defaultTCPParameters
-    node <- newLocalNode transport initRemoteTable
-    print (localNodeId node)
-    forkProcess node $ forever $ do
-        str <- expect
-        liftIO (putStrLn str)
+                 createTransport "127.0.0.1" "30020" defaultTCPParameters
+    node <- newLocalNode transport remoteTable
+    writeServerNode (localNodeId node)
+
+writeServerNode :: NodeId -> IO ()
+writeServerNode nid = do
+    path <- getExecutablePath
+    encodeFile (path ++ ".nid") nid
+
+readServerNode :: IO NodeId
+readServerNode = do
+    path <- getExecutablePath
+    decodeFile (path ++ ".nid")
 
 ------------------------------------------------------------------------
 -- Windows Service
@@ -69,7 +130,7 @@ runService = do
 svcMain :: MVar () -> MVar (DWORD, SERVICE_STATUS) -> ServiceMainFunction
 svcMain mStop gState _ _ h = do
     reportSvcStatus h RUNNING nO_ERROR 0 gState
-    forkServer
+    startServerNode
     takeMVar mStop
     reportSvcStatus h STOPPED nO_ERROR 0 gState
 

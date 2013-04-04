@@ -16,11 +16,13 @@ Executable sudo
 
   build-depends:
       base                  == 4.*
+    , binary                == 0.6.*
+    , directory
     , distributed-process   == 0.4.*
-    , network-transport-tcp == 0.3.*
     , network
+    , network-transport-tcp == 0.3.*
+    , process               == 1.1.*
     , Win32
     , Win32-services        == 0.2.*
 
   ghc-options: -Wall -threaded
-  ld-options: -enable-stdcall-fixup

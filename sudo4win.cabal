@@ -17,6 +17,7 @@ Executable sudo
   build-depends:
       base                  == 4.*
     , binary                == 0.6.*
+    , bytestring            == 0.10.*
     , directory
     , distributed-process   == 0.4.*
     , network

@@ -10,44 +10,84 @@
 
 module Main (main) where
 
-import Control.Applicative ((<$>))
-import Control.Concurrent
-import Control.Exception (throw)
-import Control.Monad (forever)
-import Data.Binary
-import Data.Typeable (Typeable)
-import GHC.Generics (Generic)
-import System.Directory (getCurrentDirectory)
-import System.Environment (getArgs, getExecutablePath, getEnvironment)
-import System.Exit
-import System.Process hiding (runProcess)
-import System.Win32.SystemServices.Services
-import System.Win32.Types
+import           Control.Applicative ((<$>))
+import           Control.Concurrent (threadDelay)
+import           Control.Concurrent.MVar
+import           Control.Exception (throw)
+import           Control.Monad (forever, when)
+import           Data.Binary
+import qualified Data.ByteString as B
+import           Data.Typeable (Typeable)
+import           GHC.Generics (Generic)
+import           System.Directory (getCurrentDirectory)
+import           System.Environment (getArgs, getExecutablePath, getEnvironment)
+import           System.Exit
+import           System.IO (Handle, BufferMode(..))
+import           System.IO (stdout, stderr, hSetBuffering, hSetBinaryMode)
+import           System.Process hiding (runProcess)
+import           System.Win32.SystemServices.Services
+import           System.Win32.Types
 
-import Control.Distributed.Process
-import Control.Distributed.Process.Node
-import Control.Distributed.Process.Closure
-import Network (withSocketsDo)
-import Network.Transport.TCP
+import           Control.Distributed.Process
+import           Control.Distributed.Process.Node
+import           Control.Distributed.Process.Closure
+import           Network (withSocketsDo)
+import           Network.Transport.TCP
 
 ------------------------------------------------------------------------
 -- Remotable
 
 data Command = Command {
-      cmdArgs :: [String]
-    , cmdDir  :: FilePath
-    , cmdEnv  :: [(String, String)]
+      cmdPid    :: ProcessId
+    , cmdArgs   :: [String]
+    , cmdDir    :: FilePath
+    , cmdEnv    :: [(String, String)]
+    , cmdStdOut :: SendPort B.ByteString
+    , cmdStdErr :: SendPort B.ByteString
     } deriving (Show, Generic, Typeable)
 
 command :: Command -> Process ExitCode
-command Command{..} = liftIO $ do
+command Command{..} = do
     let cmd = unwords cmdArgs
-    putStrLn $ cmdDir ++ " $ " ++ cmd
-    (Nothing, Nothing, Nothing, pid) <- createProcess (shell cmd) {
+    liftIO $ putStrLn (cmdDir ++ " $ " ++ cmd)
+
+    (Nothing, Just hOut, Just hErr, pid) <- liftIO $ createProcess
+        (shell cmd) {
           cwd     = Just cmdDir
         , env     = Just cmdEnv
+        , std_out = CreatePipe
+        , std_err = CreatePipe
         }
-    waitForProcess pid
+
+    link cmdPid
+
+    spawnReader hOut cmdStdOut
+    spawnReader hErr cmdStdErr
+
+    liftIO $ waitForProcess pid
+
+spawnWriter :: Handle -> Process (SendPort B.ByteString)
+spawnWriter h = do
+    liftIO (hSetBuffering h NoBuffering)
+    liftIO (hSetBinaryMode h True)
+    (s, r) <- newChan
+    spawnLocal $ forever $ do
+        bs <- receiveChan r
+        liftIO (B.hPut h bs)
+        when (B.null bs) terminate
+    return s
+
+spawnReader :: Handle -> SendPort B.ByteString -> Process ()
+spawnReader h port = do
+    liftIO (hSetBuffering h NoBuffering)
+    liftIO (hSetBinaryMode h True)
+    spawnLocal $ forever $ do
+        bs <- liftIO $ B.hGet h (64 * 1024)
+        sendChan port bs
+        when (B.null bs) terminate
+    return ()
+
+------------------------------------------------------------------------
 
 deriving instance Generic ExitCode
 
@@ -86,9 +126,14 @@ runClient args = do
     dir    <- getCurrentDirectory
     runProcess local $ do
         pid <- getSelfPid
-        let cmd = Command args dir env
+
+        outPort <- spawnWriter stdout
+        errPort <- spawnWriter stderr
+
+        let cmd = Command pid args dir env outPort errPort
         code <- call $(functionTDict 'command) server (command' cmd)
-        liftIO (print code)
+
+        liftIO (exitWith code)
 
 ------------------------------------------------------------------------
 -- Server
